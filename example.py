@@ -56,6 +56,7 @@ estimator = ekf.EKF(
     ekf.SystemModel(
         model=f,
         state=x,
+        initial_state=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 102400],
         input=u,
         covariance=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     ),
@@ -86,12 +87,11 @@ estimator = ekf.EKF(
             covariance=100000,
         ),
     ],
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 102400],
     [
         (dt, 0.001),
         (g, scipy.constants.g),
-    ]
+    ],
 )
 
-estimator.generate_source('generated')
+estimator.generate_src('generated')
 estimator.generate_docs('generated')
