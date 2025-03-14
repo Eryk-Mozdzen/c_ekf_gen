@@ -74,7 +74,7 @@ class EKF:
             file.write('#define ESTIMATOR_PREDICT(u_data)')
             for i in range(padding + 1):
                 file.write(' ')
-            file.write(f' EKF_PREDICT_{x_dim}_{u_dim}(&ekf, &system_model, u_data)\n')
+            file.write(f' ekf_predict_{x_dim}_{u_dim}(&ekf, &system_model, u_data)\n')
 
             file.write('\n')
             for measurement in self.measurements:
@@ -82,7 +82,7 @@ class EKF:
                 file.write('#define ESTIMATOR_CORRECT_' + measurement.name.upper() + '(z_data)')
                 for i in range(padding - len(measurement.name)):
                     file.write(' ')
-                file.write(f' EKF_CORRECT_{x_dim}_{z_dim}(&ekf, &{measurement.name}_model, z_data)\n')
+                file.write(f' ekf_correct_{x_dim}_{z_dim}(&ekf, &{measurement.name}_model, z_data)\n')
 
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
