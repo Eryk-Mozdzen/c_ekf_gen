@@ -55,10 +55,24 @@ h_flow = sp.Matrix([[sp.cos(yaw), sp.sin(yaw)], [-sp.sin(yaw), sp.cos(yaw)]])*sp
 estimator = ekf.EKF(
     ekf.SystemModel(
         model=f,
-        state=x,
-        initial_state=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 102400],
         input=u,
-        covariance=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        state=[
+            (qw, 'qw', 1, 1),
+            (qx, 'qx', 0, 1),
+            (qy, 'qy', 0, 1),
+            (qz, 'qz', 0, 1),
+            (wx, 'wx', 0, 1),
+            (wy, 'wy', 0, 1),
+            (wz, 'wz', 0, 1),
+            (px, 'pos_x', 0, 1),
+            (py, 'pos_y', 0, 1),
+            (pz, 'pos_z', 0, 1),
+            (vx, 'vel_x', 0, 1),
+            (vy, 'vel_y', 0, 1),
+            (vz, 'vel_z', 0, 1),
+            (thetad, 'm0', 0, 1),
+            (p0, 'p0', 102400, 1),
+        ],
     ),
     [
         ekf.MeasurementModel(

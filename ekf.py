@@ -3,14 +3,16 @@ import sympy as sp
 import sympy.codegen.ast
 import os
 import datetime
+import sys
 
 class SystemModel:
-    def __init__(self, model, state, input, covariance, initial_state):
+    def __init__(self, model, input, state):
         self.model = model
-        self.state = state
         self.input = input
-        self.covariance = covariance
-        self.initial_state = initial_state
+        self.state = sp.Matrix([t[0] for t in state])
+        self.state_elements = [t[1] for t in state]
+        self.covariance = [t[3] for t in state]
+        self.initial_state = [t[2] for t in state]
 
     def u_dim(self):
         return self.input.shape[0] #TODO
@@ -34,7 +36,7 @@ class EKF:
         self.parameters = parameters
 
     def generate_src(self, path):
-        path = os.path.join(os.path.dirname(__file__), path)
+        path = os.path.normpath(os.path.dirname(sys._getframe(1).f_globals.get('__file__')) + '/' + path)
         os.makedirs(path, exist_ok=True)
 
         padding = 0
@@ -74,12 +76,20 @@ class EKF:
                 file.write(' ')
             file.write(f' EKF_PREDICT_{x_dim}_{u_dim}(&ekf, &system_model, u_data)\n')
 
+            file.write('\n')
             for measurement in self.measurements:
                 z_dim = measurement.dim()
                 file.write('#define ESTIMATOR_CORRECT_' + measurement.name.upper() + '(z_data)')
                 for i in range(padding - len(measurement.name)):
                     file.write(' ')
                 file.write(f' EKF_CORRECT_{x_dim}_{z_dim}(&ekf, &{measurement.name}_model, z_data)\n')
+
+            file.write('\n')
+            for i, element in enumerate(self.system.state_elements):
+                file.write('#define ESTIMATOR_GET_' + element.upper())
+                for j in range(padding - len(element) + 13):
+                    file.write(' ')
+                file.write('(ekf.x.pData[' + str(i) + '])\n')
 
             file.write('\n')
             file.write(f'EKF_PREDICT_DEF({x_dim}, {u_dim})\n')
@@ -243,7 +253,7 @@ class EKF:
                 file.write(f'EKF_CORRECT({x_dim}, {z_dim})\n')
 
     def generate_docs(self, path, compile=True):
-        path = os.path.join(os.path.dirname(__file__), path)
+        path = os.path.normpath(os.path.dirname(sys._getframe(1).f_globals.get('__file__')) + '/' + path)
         os.makedirs(path, exist_ok=True)
 
         x = self.system.state
@@ -263,12 +273,12 @@ class EKF:
                 '\n'
                 '\\begin{document}\n'
                 '\t\\[x_k = ' + sp.latex(x) + ' = f(x_{k-1}, u_k) = ' + sp.latex(self.system.model) + '\\]\n'
-                '\t\\[\\frac{\partial}{\partial x}f(x_{k-1}, u_k) = ' + sp.latex(self.system.model.jacobian(x)) + '\\]\n'
+                '\t\\[\\frac{\\partial}{\\partial x}f(x_{k-1}, u_k) = ' + sp.latex(self.system.model.jacobian(x)) + '\\]\n'
             )
 
             for measurement in self.measurements:
                 file.write(f'\t\\[h_{{{measurement.name}}}(x_k) = {sp.latex(measurement.model)}\\]\n')
-                file.write(f'\t\\[\\frac{{\partial}}{{\partial x}}h_{{{measurement.name}}}(x_k) = {sp.latex(measurement.model.jacobian(x))}\\]\n')
+                file.write(f'\t\\[\\frac{{\\partial}}{{\\partial x}}h_{{{measurement.name}}}(x_k) = {sp.latex(measurement.model.jacobian(x))}\\]\n')
 
             file.write('\\end{document}\n')
 
