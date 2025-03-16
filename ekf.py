@@ -70,6 +70,11 @@ class EKF:
             for measurement in self.measurements:
                 file.write('extern ekf_measurement_model_t ' + measurement.name + '_model;\n')
 
+            if len(self.parameters)>0:
+                file.write('\n')
+                for param in self.parameters:
+                    file.write(f'extern float {param[0].name};\n')
+
             file.write('\n')
             file.write('#define ESTIMATOR_PREDICT(u_data)')
             for i in range(padding + 1):
@@ -86,10 +91,17 @@ class EKF:
 
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
-                file.write('#define ESTIMATOR_GET_' + element.upper())
-                for j in range(padding - len(element) + 13):
+                file.write('#define ESTIMATOR_GET_' + element.upper() + '()')
+                for j in range(padding - len(element) + 11):
                     file.write(' ')
                 file.write('(ekf.x.pData[' + str(i) + '])\n')
+
+            file.write('\n')
+            for i, element in enumerate(self.system.state_elements):
+                file.write('#define ESTIMATOR_SET_' + element.upper() + '(val)')
+                for j in range(padding - len(element) + 8):
+                    file.write(' ')
+                file.write('do { ekf.x.pData[' + str(i) + '] = (val); } while(0)\n')
 
             file.write('\n')
             file.write(f'EKF_PREDICT_DEF({x_dim}, {u_dim})\n')
@@ -240,7 +252,7 @@ class EKF:
 
             if len(self.parameters)>0:
                 for param in self.parameters:
-                    file.write(f'#define {param[0].name} {param[1]:f}f\n')
+                    file.write(f'float {param[0].name} = {param[1]:f}f;\n')
                 file.write('\n')
 
             estimator()
