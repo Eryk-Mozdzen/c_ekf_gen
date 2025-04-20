@@ -1,6 +1,7 @@
+# UAV example
+
 import sympy as sp
 import scipy.constants
-
 import ekf
 
 dt = sp.Symbol('T')

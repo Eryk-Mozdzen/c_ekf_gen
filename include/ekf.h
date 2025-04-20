@@ -1,7 +1,7 @@
 #ifndef EKF_H
 #define EKF_H
 
-#include "arm_math.h"
+#include <arm_math.h>
 
 typedef struct {
     arm_matrix_instance_f32 P;

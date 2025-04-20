@@ -61,57 +61,23 @@ class EKF:
                 '#ifndef ESTIMATOR_H\n'
                 '#define ESTIMATOR_H\n'
                 '\n'
-                '#include "ekf.h"\n'
-                '\n'
-                'extern ekf_t ekf;\n'
-                'extern ekf_system_model_t system_model;\n'
             )
 
-            for measurement in self.measurements:
-                file.write('extern ekf_measurement_model_t ' + measurement.name + '_model;\n')
-
-            if len(self.parameters)>0:
-                file.write('\n')
-                for param in self.parameters:
-                    file.write(f'extern float {param[0].name};\n')
-
-            file.write('\n')
-            file.write('#define ESTIMATOR_PREDICT(u_data)')
-            for i in range(padding + 1):
-                file.write(' ')
-            file.write(f' ekf_predict_{x_dim}_{u_dim}(&ekf, &system_model, u_data)\n')
-
+            file.write('void estimator_predict(const float *u_data);\n')
             file.write('\n')
             for measurement in self.measurements:
-                z_dim = measurement.dim()
-                file.write('#define ESTIMATOR_CORRECT_' + measurement.name.upper() + '(z_data)')
-                for i in range(padding - len(measurement.name)):
-                    file.write(' ')
-                file.write(f' ekf_correct_{x_dim}_{z_dim}(&ekf, &{measurement.name}_model, z_data)\n')
-
+                file.write('void estimator_correct_' + measurement.name + '(const float *z_data);\n')
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
-                file.write('#define ESTIMATOR_GET_' + element.upper() + '()')
-                for j in range(padding - len(element) + 11):
-                    file.write(' ')
-                file.write('(ekf.x.pData[' + str(i) + '])\n')
-
+                file.write('float estimator_state_get_' + element + '();\n')
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
-                file.write('#define ESTIMATOR_SET_' + element.upper() + '(val)')
-                for j in range(padding - len(element) + 8):
-                    file.write(' ')
-                file.write('do { ekf.x.pData[' + str(i) + '] = (val); } while(0)\n')
-
+                file.write('void estimator_state_set_' + element + '(const float value);\n')
             file.write('\n')
-            file.write(f'EKF_PREDICT_DEF({x_dim}, {u_dim})\n')
-            for z_dim in z_dims:
-                file.write(f'EKF_CORRECT_DEF({x_dim}, {z_dim})\n')
-
-            file.write(
-                '\n'
-                '#endif\n'
-            )
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value);\n')
+            file.write('\n')
+            file.write('#endif\n')
 
         with open(os.path.join(path, 'estimator.c'), 'w') as file:
             functions = {
@@ -134,7 +100,7 @@ class EKF:
                 file.write(EKF.__matrix(covariance, 'P_data'))
 
                 file.write(
-                    'ekf_t ekf = {\n'
+                    'static ekf_t ekf = {\n'
                     '\t.x.numRows = ' + str(x_dim) + ',\n'
                     '\t.x.numCols = 1,\n'
                     '\t.x.pData = x_data,\n'
@@ -172,14 +138,20 @@ class EKF:
                 file.write(EKF.__matrix(np.diag(variance), 'system_Q_data'))
 
                 file.write(
-                    'ekf_system_model_t system_model = {\n'
+                    'static ekf_system_model_t system_model = {\n'
                     '\t.Q.numRows = ' + str(x_dim) + ',\n'
                     '\t.Q.numCols = ' + str(x_dim) + ',\n'
                     '\t.Q.pData = system_Q_data,\n'
                     '\t.expr = system_expr,\n'
                     '};\n'
-                    '\n'
                 )
+                file.write('\n')
+                file.write(
+                    'void estimator_predict(const float *u_data) {\n'
+                    '\tekf_predict_' + str(x_dim) + '_' + str(u_dim) + '(&ekf, &system_model, u_data);\n'
+                    '}\n'
+                )
+                file.write('\n')
 
             def measurement_model(name, model, variance):
                 x_dim = x.shape[0]
@@ -207,14 +179,20 @@ class EKF:
                 file.write(EKF.__matrix(variance*np.eye(z_dim), name + '_R_data'))
 
                 file.write(
-                    'ekf_measurement_model_t ' + name + '_model = {\n'
+                    'static ekf_measurement_model_t ' + name + '_model = {\n'
                     '\t.R.numRows = ' + str(z_dim) + ',\n'
                     '\t.R.numCols = ' + str(z_dim) + ',\n'
                     '\t.R.pData = ' + name + '_R_data,\n'
                     '\t.expr = ' + name + '_expr,\n'
                     '};\n'
-                    '\n'
                 )
+                file.write('\n')
+                file.write(
+                    'void estimator_correct_' + name + '(const float *z_data) {\n'
+                    '\tekf_correct_' + str(x_dim) +'_' + str(z_dim) + '(&ekf, &' + name + '_model, z_data);\n'
+                    '}\n'
+                )
+                file.write('\n')
 
             file.write(EKF.__header())
             file.write(
@@ -224,9 +202,14 @@ class EKF:
                 '\n'
             )
 
+            file.write(f'EKF_PREDICT({x_dim}, {u_dim})\n')
+            for z_dim in z_dims:
+                file.write(f'EKF_CORRECT({x_dim}, {z_dim})\n')
+            file.write('\n')
+
             if len(self.parameters)>0:
                 for param in self.parameters:
-                    file.write(f'float {param[0].name} = {param[1]:f}f;\n')
+                    file.write(f'static float {param[0].name} = {param[1]:f}f;\n')
                 file.write('\n')
 
             estimator()
@@ -234,9 +217,23 @@ class EKF:
             for measurement in self.measurements:
                 measurement_model(measurement.name, measurement.model, measurement.covariance)
 
-            file.write(f'EKF_PREDICT({x_dim}, {u_dim})\n')
-            for z_dim in z_dims:
-                file.write(f'EKF_CORRECT({x_dim}, {z_dim})\n')
+            for i, element in enumerate(self.system.state_elements):
+                file.write('float estimator_state_get_' + element + '() {\n')
+                file.write('\treturn ekf.x.pData[' + str(i) + '];\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for i, element in enumerate(self.system.state_elements):
+                file.write('void estimator_state_set_' + element + '(const float value) {\n')
+                file.write('\tekf.x.pData[' + str(i) + '] = value;\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value) {\n')
+                file.write('\t' + param[0].name + ' = value;\n')
+                file.write('}\n')
+                file.write('\n')
 
     def generate_docs(self, path, compile=True):
         path = os.path.normpath(os.path.dirname(sys._getframe(1).f_globals.get('__file__')) + '/' + path)
