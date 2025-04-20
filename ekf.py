@@ -152,32 +152,20 @@ class EKF:
                 subs.extend([(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)])
                 subs.extend([(uu, sp.Symbol(f'u[{i}]')) for i, uu in enumerate(u)])
 
-                cse_subs, cse_reduced = sp.cse([model], optimizations='basic')
-                model_reduced, = cse_reduced
+                cse_subs, cse_reduced = sp.cse([model, model.jacobian(x)], optimizations='basic')
+                f_reduced, F_reduced, = cse_reduced
 
-                file.write('static void system_f(const float *x, const float *u, float *x_next) {\n')
+                file.write('static void system_expr(const float *x, const float *u, float *f, float *F) {\n')
                 for lhs, rhs in cse_subs:
                     file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(x_dim):
-                    file.write(f'\tx_next[{i}] = {sp.ccode(model_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                file.write('}\n')
+                    file.write(f'\tf[{i}] = {sp.ccode(f_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('\n')
-
-                cse_subs, cse_reduced = sp.cse([model.jacobian(x)], optimizations='basic')
-                model_reduced, = cse_reduced
-
-                file.write('static void system_df(const float *x, const float *u, float *x_next) {\n')
-                for lhs, rhs in cse_subs:
-                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                if len(cse_subs)>0:
-                    file.write('\n')
                 for i in range(x_dim):
                     for j in range(x_dim):
-                        file.write(f'\tx_next[{i*x_dim + j}] = {sp.ccode(model_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                    if i!=(x_dim-1):
-                        file.write('\n')
+                        file.write(f'\tF[{i*x_dim + j}] = {sp.ccode(F_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
@@ -188,8 +176,7 @@ class EKF:
                     '\t.Q.numRows = ' + str(x_dim) + ',\n'
                     '\t.Q.numCols = ' + str(x_dim) + ',\n'
                     '\t.Q.pData = system_Q_data,\n'
-                    '\t.f = system_f,\n'
-                    '\t.df = system_df,\n'
+                    '\t.expr = system_expr,\n'
                     '};\n'
                     '\n'
                 )
@@ -200,32 +187,20 @@ class EKF:
 
                 subs = [(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)]
 
-                cse_subs, cse_reduced = sp.cse([model], optimizations='basic')
-                model_reduced, = cse_reduced
+                cse_subs, cse_reduced = sp.cse([model, model.jacobian(x)], optimizations='basic')
+                h_reduced, H_reduced = cse_reduced
 
-                file.write(f'static void {name}_h(const float *x, float *z) {{\n')
+                file.write(f'static void {name}_expr(const float *x, float *h, float *H) {{\n')
                 for lhs, rhs in cse_subs:
                     file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(z_dim):
-                    file.write(f'\tz[{i}] = {sp.ccode(model_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                file.write('}\n')
+                    file.write(f'\th[{i}] = {sp.ccode(h_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('\n')
-
-                cse_subs, cse_reduced = sp.cse([model.jacobian(x)], optimizations='basic')
-                model_reduced, = cse_reduced
-
-                file.write(f'static void {name}_dh(const float *x, float *z) {{\n')
-                for lhs, rhs in cse_subs:
-                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                if len(cse_subs)>0:
-                    file.write('\n')
                 for i in range(z_dim):
                     for j in range(x_dim):
-                        file.write(f'\tz[{i*x_dim + j}] = {sp.ccode(model_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
-                    if i!=(z_dim-1):
-                        file.write('\n')
+                        file.write(f'\tH[{i*x_dim + j}] = {sp.ccode(H_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
@@ -236,8 +211,7 @@ class EKF:
                     '\t.R.numRows = ' + str(z_dim) + ',\n'
                     '\t.R.numCols = ' + str(z_dim) + ',\n'
                     '\t.R.pData = ' + name + '_R_data,\n'
-                    '\t.h = ' + name + '_h,\n'
-                    '\t.dh = ' + name + '_dh,\n'
+                    '\t.expr = ' + name + '_expr,\n'
                     '};\n'
                     '\n'
                 )
