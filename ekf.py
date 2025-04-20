@@ -10,9 +10,9 @@ class SystemModel:
         self.model = model
         self.input = input
         self.state = sp.Matrix([t[0] for t in state])
-        self.state_elements = [t[1] for t in state]
-        self.covariance = [t[3] for t in state]
-        self.initial_state = [t[2] for t in state]
+        self.state_elements = [sp.ccode(t[0]).replace('_', '') for t in state]
+        self.covariance = [t[2] for t in state]
+        self.initial_state = [t[1] for t in state]
 
     def u_dim(self):
         return self.input.shape[0] #TODO
@@ -117,6 +117,7 @@ class EKF:
             functions = {
                 'Pow': [
                     (lambda base, exponent: exponent==2, lambda base, exponent: '(%s)*(%s)' % (base, base)),
+                    (lambda base, exponent: exponent==-1, lambda base, exponent: '(1.F/(%s))' % (base)),
                     (lambda base, exponent: exponent!=2, lambda base, exponent: 'powf(%s, %s)' % (base, exponent))
                 ],
             }
@@ -147,39 +148,34 @@ class EKF:
             def system_model(model, variance):
                 assert len(variance) == x_dim
 
-                f_used = list(model.free_symbols)
-                df_used = list(model.jacobian(x).free_symbols)
+                subs = []
+                subs.extend([(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)])
+                subs.extend([(uu, sp.Symbol(f'u[{i}]')) for i, uu in enumerate(u)])
+
+                cse_subs, cse_reduced = sp.cse([model], optimizations='basic')
+                model_reduced, = cse_reduced
 
                 file.write('static void system_f(const float *x, const float *u, float *x_next) {\n')
-                for i in range(u_dim):
-                    if u[i] in f_used:
-                        file.write(f'\tconst float {sp.ccode(u[i])} = u[{i}];\n')
-                if len(f_used)>0:
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(x_dim):
-                    if x[i] in f_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(f_used)>0:
-                    file.write('\n')
-                for i in range(x_dim):
-                    file.write(f'\tx_next[{i}] = {sp.ccode(model[i], user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'\tx_next[{i}] = {sp.ccode(model_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
+                cse_subs, cse_reduced = sp.cse([model.jacobian(x)], optimizations='basic')
+                model_reduced, = cse_reduced
+
                 file.write('static void system_df(const float *x, const float *u, float *x_next) {\n')
-                for i in range(u_dim):
-                    if u[i] in df_used:
-                        file.write(f'\tconst float {sp.ccode(u[i])} = u[{i}];\n')
-                if len(f_used)>0:
-                    file.write('\n')
-                for i in range(x_dim):
-                    if x[i] in df_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(df_used)>0:
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(x_dim):
                     for j in range(x_dim):
-                        file.write(f'\tx_next[{i*x_dim + j}] = {sp.ccode(model.jacobian(x)[i, j], user_functions=functions, type_aliases=aliases)};\n')
+                        file.write(f'\tx_next[{i*x_dim + j}] = {sp.ccode(model_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                     if i!=(x_dim-1):
                         file.write('\n')
                 file.write('}\n')
@@ -201,29 +197,33 @@ class EKF:
             def measurement_model(name, model, variance):
                 x_dim = x.shape[0]
                 z_dim = model.shape[0]
-                h_used = list(model.free_symbols)
-                dh_used = list(model.jacobian(x).free_symbols)
+
+                subs = [(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)]
+
+                cse_subs, cse_reduced = sp.cse([model], optimizations='basic')
+                model_reduced, = cse_reduced
 
                 file.write(f'static void {name}_h(const float *x, float *z) {{\n')
-                for i in range(x_dim):
-                    if x[i] in h_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(h_used)>0:
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(z_dim):
-                    file.write(f'\tz[{i}] = {sp.ccode(model[i], user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'\tz[{i}] = {sp.ccode(model_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
+                cse_subs, cse_reduced = sp.cse([model.jacobian(x)], optimizations='basic')
+                model_reduced, = cse_reduced
+
                 file.write(f'static void {name}_dh(const float *x, float *z) {{\n')
-                for i in range(x_dim):
-                    if x[i] in dh_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(dh_used)>0:
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(z_dim):
                     for j in range(x_dim):
-                        file.write(f'\tz[{i*x_dim + j}] = {sp.ccode(model.jacobian(x)[i, j], user_functions=functions, type_aliases=aliases)};\n')
+                        file.write(f'\tz[{i*x_dim + j}] = {sp.ccode(model_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                     if i!=(z_dim-1):
                         file.write('\n')
                 file.write('}\n')
