@@ -10,9 +10,9 @@ class SystemModel:
         self.model = model
         self.input = input
         self.state = sp.Matrix([t[0] for t in state])
-        self.state_elements = [t[1] for t in state]
-        self.covariance = [t[3] for t in state]
-        self.initial_state = [t[2] for t in state]
+        self.state_elements = [sp.ccode(t[0]).replace('_', '') for t in state]
+        self.covariance = [t[2] for t in state]
+        self.initial_state = [t[1] for t in state]
 
     def u_dim(self):
         return self.input.shape[0] #TODO
@@ -61,62 +61,32 @@ class EKF:
                 '#ifndef ESTIMATOR_H\n'
                 '#define ESTIMATOR_H\n'
                 '\n'
-                '#include "ekf.h"\n'
-                '\n'
-                'extern ekf_t ekf;\n'
-                'extern ekf_system_model_t system_model;\n'
             )
 
-            for measurement in self.measurements:
-                file.write('extern ekf_measurement_model_t ' + measurement.name + '_model;\n')
-
-            if len(self.parameters)>0:
-                file.write('\n')
-                for param in self.parameters:
-                    file.write(f'extern float {param[0].name};\n')
-
-            file.write('\n')
-            file.write('#define ESTIMATOR_PREDICT(u_data)')
-            for i in range(padding + 1):
-                file.write(' ')
-            file.write(f' ekf_predict_{x_dim}_{u_dim}(&ekf, &system_model, u_data)\n')
-
+            file.write('void estimator_predict(const float *u_data);\n')
             file.write('\n')
             for measurement in self.measurements:
-                z_dim = measurement.dim()
-                file.write('#define ESTIMATOR_CORRECT_' + measurement.name.upper() + '(z_data)')
-                for i in range(padding - len(measurement.name)):
-                    file.write(' ')
-                file.write(f' ekf_correct_{x_dim}_{z_dim}(&ekf, &{measurement.name}_model, z_data)\n')
-
+                file.write('void estimator_correct_' + measurement.name + '(const float *z_data);\n')
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
-                file.write('#define ESTIMATOR_GET_' + element.upper() + '()')
-                for j in range(padding - len(element) + 11):
-                    file.write(' ')
-                file.write('(ekf.x.pData[' + str(i) + '])\n')
-
+                file.write('float estimator_state_get_' + element + '();\n')
             file.write('\n')
             for i, element in enumerate(self.system.state_elements):
-                file.write('#define ESTIMATOR_SET_' + element.upper() + '(val)')
-                for j in range(padding - len(element) + 8):
-                    file.write(' ')
-                file.write('do { ekf.x.pData[' + str(i) + '] = (val); } while(0)\n')
-
+                file.write('void estimator_state_set_' + element + '(const float value);\n')
             file.write('\n')
-            file.write(f'EKF_PREDICT_DEF({x_dim}, {u_dim})\n')
-            for z_dim in z_dims:
-                file.write(f'EKF_CORRECT_DEF({x_dim}, {z_dim})\n')
-
-            file.write(
-                '\n'
-                '#endif\n'
-            )
+            for param in self.parameters:
+                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '();\n')
+            file.write('\n')
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value);\n')
+            file.write('\n')
+            file.write('#endif\n')
 
         with open(os.path.join(path, 'estimator.c'), 'w') as file:
             functions = {
                 'Pow': [
                     (lambda base, exponent: exponent==2, lambda base, exponent: '(%s)*(%s)' % (base, base)),
+                    (lambda base, exponent: exponent==-1, lambda base, exponent: '(1.F/(%s))' % (base)),
                     (lambda base, exponent: exponent!=2, lambda base, exponent: 'powf(%s, %s)' % (base, exponent))
                 ],
             }
@@ -133,7 +103,7 @@ class EKF:
                 file.write(EKF.__matrix(covariance, 'P_data'))
 
                 file.write(
-                    'ekf_t ekf = {\n'
+                    'static ekf_t ekf = {\n'
                     '\t.x.numRows = ' + str(x_dim) + ',\n'
                     '\t.x.numCols = 1,\n'
                     '\t.x.pData = x_data,\n'
@@ -147,100 +117,85 @@ class EKF:
             def system_model(model, variance):
                 assert len(variance) == x_dim
 
-                f_used = list(model.free_symbols)
-                df_used = list(model.jacobian(x).free_symbols)
+                subs = []
+                subs.extend([(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)])
+                subs.extend([(uu, sp.Symbol(f'u[{i}]')) for i, uu in enumerate(u)])
 
-                file.write('static void system_f(const float *x, const float *u, float *x_next) {\n')
-                for i in range(u_dim):
-                    if u[i] in f_used:
-                        file.write(f'\tconst float {sp.ccode(u[i])} = u[{i}];\n')
-                if len(f_used)>0:
+                cse_subs, cse_reduced = sp.cse([model, model.jacobian(x)], optimizations='basic')
+                f_reduced, F_reduced, = cse_reduced
+
+                file.write('static void system_expr(const float *x, const float *u, float *f, float *F) {\n')
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(x_dim):
-                    if x[i] in f_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(f_used)>0:
-                    file.write('\n')
-                for i in range(x_dim):
-                    file.write(f'\tx_next[{i}] = {sp.ccode(model[i], user_functions=functions, type_aliases=aliases)};\n')
-                file.write('}\n')
+                    file.write(f'\tf[{i}] = {sp.ccode(f_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('\n')
-
-                file.write('static void system_df(const float *x, const float *u, float *x_next) {\n')
-                for i in range(u_dim):
-                    if u[i] in df_used:
-                        file.write(f'\tconst float {sp.ccode(u[i])} = u[{i}];\n')
-                if len(f_used)>0:
-                    file.write('\n')
-                for i in range(x_dim):
-                    if x[i] in df_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(df_used)>0:
-                    file.write('\n')
                 for i in range(x_dim):
                     for j in range(x_dim):
-                        file.write(f'\tx_next[{i*x_dim + j}] = {sp.ccode(model.jacobian(x)[i, j], user_functions=functions, type_aliases=aliases)};\n')
-                    if i!=(x_dim-1):
-                        file.write('\n')
+                        file.write(f'\tF[{i*x_dim + j}] = {sp.ccode(F_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
                 file.write(EKF.__matrix(np.diag(variance), 'system_Q_data'))
 
                 file.write(
-                    'ekf_system_model_t system_model = {\n'
+                    'static ekf_system_model_t system_model = {\n'
                     '\t.Q.numRows = ' + str(x_dim) + ',\n'
                     '\t.Q.numCols = ' + str(x_dim) + ',\n'
                     '\t.Q.pData = system_Q_data,\n'
-                    '\t.f = system_f,\n'
-                    '\t.df = system_df,\n'
+                    '\t.expr = system_expr,\n'
                     '};\n'
-                    '\n'
                 )
+                file.write('\n')
+                file.write(
+                    'void estimator_predict(const float *u_data) {\n'
+                    '\tekf_predict_' + str(x_dim) + '_' + str(u_dim) + '(&ekf, &system_model, u_data);\n'
+                    '}\n'
+                )
+                file.write('\n')
 
             def measurement_model(name, model, variance):
                 x_dim = x.shape[0]
                 z_dim = model.shape[0]
-                h_used = list(model.free_symbols)
-                dh_used = list(model.jacobian(x).free_symbols)
 
-                file.write(f'static void {name}_h(const float *x, float *z) {{\n')
-                for i in range(x_dim):
-                    if x[i] in h_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(h_used)>0:
+                subs = [(xx, sp.Symbol(f'x[{i}]')) for i, xx in enumerate(x)]
+
+                cse_subs, cse_reduced = sp.cse([model, model.jacobian(x)], optimizations='basic')
+                h_reduced, H_reduced = cse_reduced
+
+                file.write(f'static void {name}_expr(const float *x, float *h, float *H) {{\n')
+                for lhs, rhs in cse_subs:
+                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(z_dim):
-                    file.write(f'\tz[{i}] = {sp.ccode(model[i], user_functions=functions, type_aliases=aliases)};\n')
-                file.write('}\n')
+                    file.write(f'\th[{i}] = {sp.ccode(h_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('\n')
-
-                file.write(f'static void {name}_dh(const float *x, float *z) {{\n')
-                for i in range(x_dim):
-                    if x[i] in dh_used:
-                        file.write(f'\tconst float {sp.ccode(x[i])} = x[{i}];\n')
-                if len(dh_used)>0:
-                    file.write('\n')
                 for i in range(z_dim):
                     for j in range(x_dim):
-                        file.write(f'\tz[{i*x_dim + j}] = {sp.ccode(model.jacobian(x)[i, j], user_functions=functions, type_aliases=aliases)};\n')
-                    if i!=(z_dim-1):
-                        file.write('\n')
+                        file.write(f'\tH[{i*x_dim + j}] = {sp.ccode(H_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
                 file.write('}\n')
                 file.write('\n')
 
                 file.write(EKF.__matrix(variance*np.eye(z_dim), name + '_R_data'))
 
                 file.write(
-                    'ekf_measurement_model_t ' + name + '_model = {\n'
+                    'static ekf_measurement_model_t ' + name + '_model = {\n'
                     '\t.R.numRows = ' + str(z_dim) + ',\n'
                     '\t.R.numCols = ' + str(z_dim) + ',\n'
                     '\t.R.pData = ' + name + '_R_data,\n'
-                    '\t.h = ' + name + '_h,\n'
-                    '\t.dh = ' + name + '_dh,\n'
+                    '\t.expr = ' + name + '_expr,\n'
                     '};\n'
-                    '\n'
                 )
+                file.write('\n')
+                file.write(
+                    'void estimator_correct_' + name + '(const float *z_data) {\n'
+                    '\tekf_correct_' + str(x_dim) +'_' + str(z_dim) + '(&ekf, &' + name + '_model, z_data);\n'
+                    '}\n'
+                )
+                file.write('\n')
 
             file.write(EKF.__header())
             file.write(
@@ -250,9 +205,14 @@ class EKF:
                 '\n'
             )
 
+            file.write(f'EKF_PREDICT({x_dim}, {u_dim})\n')
+            for z_dim in z_dims:
+                file.write(f'EKF_CORRECT({x_dim}, {z_dim})\n')
+            file.write('\n')
+
             if len(self.parameters)>0:
                 for param in self.parameters:
-                    file.write(f'float {param[0].name} = {param[1]:f}f;\n')
+                    file.write(f'static float {param[0].name} = {param[1]:f}f;\n')
                 file.write('\n')
 
             estimator()
@@ -260,9 +220,29 @@ class EKF:
             for measurement in self.measurements:
                 measurement_model(measurement.name, measurement.model, measurement.covariance)
 
-            file.write(f'EKF_PREDICT({x_dim}, {u_dim})\n')
-            for z_dim in z_dims:
-                file.write(f'EKF_CORRECT({x_dim}, {z_dim})\n')
+            for i, element in enumerate(self.system.state_elements):
+                file.write('float estimator_state_get_' + element + '() {\n')
+                file.write('\treturn ekf.x.pData[' + str(i) + '];\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for i, element in enumerate(self.system.state_elements):
+                file.write('void estimator_state_set_' + element + '(const float value) {\n')
+                file.write('\tekf.x.pData[' + str(i) + '] = value;\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for param in self.parameters:
+                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '() {\n')
+                file.write('\treturn ' + param[0].name + ';\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value) {\n')
+                file.write('\t' + param[0].name + ' = value;\n')
+                file.write('}\n')
+                file.write('\n')
 
     def generate_docs(self, path, compile=True):
         path = os.path.normpath(os.path.dirname(sys._getframe(1).f_globals.get('__file__')) + '/' + path)

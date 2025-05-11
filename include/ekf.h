@@ -1,7 +1,7 @@
 #ifndef EKF_H
 #define EKF_H
 
-#include "arm_math.h"
+#include <arm_math.h>
 
 typedef struct {
     arm_matrix_instance_f32 P;
@@ -10,14 +10,12 @@ typedef struct {
 
 typedef struct {
     arm_matrix_instance_f32 Q;
-    void (*f)(const float *x, const float *u, float *x_next);
-	void (*df)(const float *x, const float *u, float *x_next);
+    void (*expr)(const float *x, const float *u, float *f, float *F);
 } ekf_system_model_t;
 
 typedef struct {
     arm_matrix_instance_f32 R;
-    void (*h)(const float *x, float *z);
-	void (*dh)(const float *x, float *z);
+    void (*expr)(const float *x, float *h, float *H);
 } ekf_measurement_model_t;
 
 #define EKF_PREDICT_DEF(X, U) \
@@ -34,6 +32,13 @@ typedef struct {
             .pData = (float *)u_data \
         }; \
  \
+        float x_next_data[X]; \
+        arm_matrix_instance_f32 x_next = { \
+            .numRows = X, \
+            .numCols = 1, \
+            .pData = x_next_data \
+        }; \
+\
         float F_data[X*X]; \
         arm_matrix_instance_f32 F = { \
             .numRows = X, \
@@ -41,15 +46,7 @@ typedef struct {
             .pData = F_data \
         }; \
  \
-        system->df(ekf->x.pData, u.pData, F.pData); \
- \
-        float x_next_data[X]; \
-        arm_matrix_instance_f32 x_next = { \
-            .numRows = X, \
-            .numCols = 1, \
-            .pData = x_next_data \
-        }; \
-        system->f(ekf->x.pData, u.pData, x_next.pData); \
+        system->expr(ekf->x.pData, u.pData, x_next.pData, F.pData); \
         memcpy(ekf->x.pData, x_next.pData, X*sizeof(float)); \
  \
         float FT_data[X*X]; \
@@ -82,6 +79,13 @@ typedef struct {
 
 #define EKF_CORRECT(X, Z) \
     void ekf_correct_##X##_##Z(ekf_t *ekf, const ekf_measurement_model_t *measurement, const float *z_data) { \
+        float h_data[Z]; \
+        arm_matrix_instance_f32 h = { \
+            .numRows = Z, \
+            .numCols = 1, \
+            .pData = h_data \
+        }; \
+\
         float H_data[Z*X]; \
         arm_matrix_instance_f32 H = { \
             .numRows = Z, \
@@ -89,7 +93,7 @@ typedef struct {
             .pData = H_data \
         }; \
  \
-        measurement->dh(ekf->x.pData, H.pData); \
+        measurement->expr(ekf->x.pData, h.pData, H.pData); \
  \
         float HT_data[X*Z]; \
         arm_matrix_instance_f32 HT = { \
@@ -113,13 +117,6 @@ typedef struct {
             .pData = (float *)z_data \
         }; \
  \
-        float h_data[Z]; \
-        arm_matrix_instance_f32 h = { \
-            .numRows = Z, \
-            .numCols = 1, \
-            .pData = h_data \
-        }; \
-        measurement->h(ekf->x.pData, h.pData); \
         arm_mat_sub_f32(&z, &h, &y); \
  \
         float PHT_data[X*Z]; \
