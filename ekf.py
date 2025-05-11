@@ -75,6 +75,9 @@ class EKF:
                 file.write('void estimator_state_set_' + element + '(const float value);\n')
             file.write('\n')
             for param in self.parameters:
+                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '();\n')
+            file.write('\n')
+            for param in self.parameters:
                 file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value);\n')
             file.write('\n')
             file.write('#endif\n')
@@ -226,6 +229,12 @@ class EKF:
             for i, element in enumerate(self.system.state_elements):
                 file.write('void estimator_state_set_' + element + '(const float value) {\n')
                 file.write('\tekf.x.pData[' + str(i) + '] = value;\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for param in self.parameters:
+                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '() {\n')
+                file.write('\treturn ' + param[0].name + ';\n')
                 file.write('}\n')
                 file.write('\n')
 
