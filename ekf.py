@@ -300,7 +300,7 @@ class EKF:
         for i in range(rows):
             text +='\t'
             for j in range(cols):
-                text +=f'{int(matrix[i][j])},'
+                text +=f'{matrix[i][j]},'
                 if j!=(cols-1):
                     text +=' '
             text +='\n'
