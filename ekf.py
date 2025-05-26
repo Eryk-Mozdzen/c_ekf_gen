@@ -10,7 +10,6 @@ class SystemModel:
         self.model = model
         self.input = input
         self.state = sp.Matrix([t[0] for t in state])
-        self.state_elements = [sp.ccode(t[0]).replace('_', '') for t in state]
         self.covariance = [t[2] for t in state]
         self.initial_state = [t[1] for t in state]
 
@@ -68,32 +67,38 @@ class EKF:
             for measurement in self.measurements:
                 file.write('void estimator_correct_' + measurement.name + '(const float *z_data);\n')
             file.write('\n')
-            for i, element in enumerate(self.system.state_elements):
-                file.write('float estimator_state_get_' + element + '();\n')
+            for i, element in enumerate(self.system.state):
+                file.write('float estimator_state_get_' + EKF.__variable(element) + '();\n')
             file.write('\n')
-            for i, element in enumerate(self.system.state_elements):
-                file.write('void estimator_state_set_' + element + '(const float value);\n')
-            file.write('\n')
-            for param in self.parameters:
-                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '();\n')
+            for i, element in enumerate(self.system.state):
+                file.write('void estimator_state_set_' + EKF.__variable(element) + '(const float value);\n')
             file.write('\n')
             for param in self.parameters:
-                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value);\n')
+                file.write('float estimator_param_get_' + EKF.__variable(param[0].name) + '();\n')
+            file.write('\n')
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + EKF.__variable(param[0].name) + '(const float value);\n')
             file.write('\n')
             file.write('#endif\n')
 
         with open(os.path.join(path, 'estimator.c'), 'w') as file:
-            functions = {
-                'Pow': [
-                    (lambda base, exponent: exponent==2, lambda base, exponent: '(%s)*(%s)' % (base, base)),
-                    (lambda base, exponent: exponent==-1, lambda base, exponent: '(1.F/(%s))' % (base)),
-                    (lambda base, exponent: exponent!=2, lambda base, exponent: 'powf(%s, %s)' % (base, exponent))
-                ],
-            }
 
-            aliases = {
-                sympy.codegen.ast.real: sympy.codegen.ast.float32,
-            }
+            def ccode(expr):
+                expr = expr.subs([(e, sp.Symbol(EKF.__variable(e))) for e in expr.free_symbols])
+
+                functions = {
+                    'Pow': [
+                        (lambda base, exponent: exponent==2, lambda base, exponent: '(%s)*(%s)' % (base, base)),
+                        (lambda base, exponent: exponent==-1, lambda base, exponent: '(1.F/(%s))' % (base)),
+                        (lambda base, exponent: exponent!=2, lambda base, exponent: 'powf(%s, %s)' % (base, exponent))
+                    ],
+                }
+
+                aliases = {
+                    sympy.codegen.ast.real: sympy.codegen.ast.float32,
+                }
+
+                return sp.ccode(expr, user_functions=functions, type_aliases=aliases)
 
             def estimator():
                 initial = np.array(self.system.initial_state).reshape(-1, 1)
@@ -104,12 +109,12 @@ class EKF:
 
                 file.write(
                     'static ekf_t ekf = {\n'
-                    '\t.x.numRows = ' + str(x_dim) + ',\n'
-                    '\t.x.numCols = 1,\n'
-                    '\t.x.pData = x_data,\n'
-                    '\t.P.numRows = ' + str(x_dim) + ',\n'
-                    '\t.P.numCols = ' + str(x_dim) + ',\n'
-                    '\t.P.pData = P_data,\n'
+                    '    .x.numRows = ' + str(x_dim) + ',\n'
+                    '    .x.numCols = 1,\n'
+                    '    .x.pData = x_data,\n'
+                    '    .P.numRows = ' + str(x_dim) + ',\n'
+                    '    .P.numCols = ' + str(x_dim) + ',\n'
+                    '    .P.pData = P_data,\n'
                     '};\n'
                     '\n'
                 )
@@ -126,15 +131,15 @@ class EKF:
 
                 file.write('static void system_expr(const float *x, const float *u, float *f, float *F) {\n')
                 for lhs, rhs in cse_subs:
-                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'    const float {lhs} = {ccode(rhs.subs(subs))};\n')
                 if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(x_dim):
-                    file.write(f'\tf[{i}] = {sp.ccode(f_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'    f[{i}] = {ccode(f_reduced[i].subs(subs))};\n')
                 file.write('\n')
                 for i in range(x_dim):
                     for j in range(x_dim):
-                        file.write(f'\tF[{i*x_dim + j}] = {sp.ccode(F_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                        file.write(f'    F[{i*x_dim + j}] = {ccode(F_reduced[i, j].subs(subs))};\n')
                 file.write('}\n')
                 file.write('\n')
 
@@ -142,16 +147,16 @@ class EKF:
 
                 file.write(
                     'static ekf_system_model_t system_model = {\n'
-                    '\t.Q.numRows = ' + str(x_dim) + ',\n'
-                    '\t.Q.numCols = ' + str(x_dim) + ',\n'
-                    '\t.Q.pData = system_Q_data,\n'
-                    '\t.expr = system_expr,\n'
+                    '    .Q.numRows = ' + str(x_dim) + ',\n'
+                    '    .Q.numCols = ' + str(x_dim) + ',\n'
+                    '    .Q.pData = system_Q_data,\n'
+                    '    .expr = system_expr,\n'
                     '};\n'
                 )
                 file.write('\n')
                 file.write(
                     'void estimator_predict(const float *u_data) {\n'
-                    '\tekf_predict_' + str(x_dim) + '_' + str(u_dim) + '(&ekf, &system_model, u_data);\n'
+                    '    ekf_predict_' + str(x_dim) + '_' + str(u_dim) + '(&ekf, &system_model, u_data);\n'
                     '}\n'
                 )
                 file.write('\n')
@@ -167,15 +172,15 @@ class EKF:
 
                 file.write(f'static void {name}_expr(const float *x, float *h, float *H) {{\n')
                 for lhs, rhs in cse_subs:
-                    file.write(f'\tconst float {lhs} = {sp.ccode(rhs.subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'    const float {lhs} = {ccode(rhs.subs(subs))};\n')
                 if len(cse_subs)>0:
                     file.write('\n')
                 for i in range(z_dim):
-                    file.write(f'\th[{i}] = {sp.ccode(h_reduced[i].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                    file.write(f'    h[{i}] = {ccode(h_reduced[i].subs(subs))};\n')
                 file.write('\n')
                 for i in range(z_dim):
                     for j in range(x_dim):
-                        file.write(f'\tH[{i*x_dim + j}] = {sp.ccode(H_reduced[i, j].subs(subs), user_functions=functions, type_aliases=aliases)};\n')
+                        file.write(f'    H[{i*x_dim + j}] = {ccode(H_reduced[i, j].subs(subs))};\n')
                 file.write('}\n')
                 file.write('\n')
 
@@ -183,16 +188,16 @@ class EKF:
 
                 file.write(
                     'static ekf_measurement_model_t ' + name + '_model = {\n'
-                    '\t.R.numRows = ' + str(z_dim) + ',\n'
-                    '\t.R.numCols = ' + str(z_dim) + ',\n'
-                    '\t.R.pData = ' + name + '_R_data,\n'
-                    '\t.expr = ' + name + '_expr,\n'
+                    '    .R.numRows = ' + str(z_dim) + ',\n'
+                    '    .R.numCols = ' + str(z_dim) + ',\n'
+                    '    .R.pData = ' + name + '_R_data,\n'
+                    '    .expr = ' + name + '_expr,\n'
                     '};\n'
                 )
                 file.write('\n')
                 file.write(
                     'void estimator_correct_' + name + '(const float *z_data) {\n'
-                    '\tekf_correct_' + str(x_dim) +'_' + str(z_dim) + '(&ekf, &' + name + '_model, z_data);\n'
+                    '    ekf_correct_' + str(x_dim) +'_' + str(z_dim) + '(&ekf, &' + name + '_model, z_data);\n'
                     '}\n'
                 )
                 file.write('\n')
@@ -212,7 +217,7 @@ class EKF:
 
             if len(self.parameters)>0:
                 for param in self.parameters:
-                    file.write(f'static float {param[0].name} = {param[1]:f}f;\n')
+                    file.write(f'static float {EKF.__variable(param[0].name)} = {param[1]:f}f;\n')
                 file.write('\n')
 
             estimator()
@@ -220,27 +225,27 @@ class EKF:
             for measurement in self.measurements:
                 measurement_model(measurement.name, measurement.model, measurement.covariance)
 
-            for i, element in enumerate(self.system.state_elements):
-                file.write('float estimator_state_get_' + element + '() {\n')
-                file.write('\treturn ekf.x.pData[' + str(i) + '];\n')
+            for i, element in enumerate(self.system.state):
+                file.write('float estimator_state_get_' + EKF.__variable(element) + '() {\n')
+                file.write('    return ekf.x.pData[' + str(i) + '];\n')
                 file.write('}\n')
                 file.write('\n')
 
-            for i, element in enumerate(self.system.state_elements):
-                file.write('void estimator_state_set_' + element + '(const float value) {\n')
-                file.write('\tekf.x.pData[' + str(i) + '] = value;\n')
-                file.write('}\n')
-                file.write('\n')
-
-            for param in self.parameters:
-                file.write('float estimator_param_get_' + param[0].name.replace('_', '') + '() {\n')
-                file.write('\treturn ' + param[0].name + ';\n')
+            for i, element in enumerate(self.system.state):
+                file.write('void estimator_state_set_' + EKF.__variable(element) + '(const float value) {\n')
+                file.write('    ekf.x.pData[' + str(i) + '] = value;\n')
                 file.write('}\n')
                 file.write('\n')
 
             for param in self.parameters:
-                file.write('void estimator_param_set_' + param[0].name.replace('_', '') + '(const float value) {\n')
-                file.write('\t' + param[0].name + ' = value;\n')
+                file.write('float estimator_param_get_' + EKF.__variable(param[0]) + '() {\n')
+                file.write('    return ' + EKF.__variable(param[0].name) + ';\n')
+                file.write('}\n')
+                file.write('\n')
+
+            for param in self.parameters:
+                file.write('void estimator_param_set_' + EKF.__variable(param[0]) + '(const float value) {\n')
+                file.write('    ' + EKF.__variable(param[0].name) + ' = value;\n')
                 file.write('}\n')
                 file.write('\n')
 
@@ -264,8 +269,8 @@ class EKF:
                 '}\n'
                 '\n'
                 '\\begin{document}\n'
-                '\t\\[x_k = ' + sp.latex(x) + ' = f(x_{k-1}, u_k) = ' + sp.latex(self.system.model) + '\\]\n'
-                '\t\\[\\frac{\\partial}{\\partial x}f(x_{k-1}, u_k) = ' + sp.latex(self.system.model.jacobian(x)) + '\\]\n'
+                '\t\\[x_k = ' + sp.latex(x) + ' = f(x_{k-1}, u_{k-1}) = ' + sp.latex(self.system.model) + '\\]\n'
+                '\t\\[\\frac{\\partial}{\\partial x}f(x_{k-1}, u_{k-1}) = ' + sp.latex(self.system.model.jacobian(x)) + '\\]\n'
             )
 
             for measurement in self.measurements:
@@ -278,7 +283,6 @@ class EKF:
             os.system(f'pdflatex -interaction=nonstopmode -output-directory={path} {os.path.join(path, "estimator.tex")} > /dev/null')
             os.system(f'rm {os.path.join(path, "estimator.aux")}')
             os.system(f'rm {os.path.join(path, "estimator.log")}')
-            os.system(f'rm {os.path.join(path, "estimator.tex")}')
 
     def __header(comment='//'):
         text = \
@@ -307,3 +311,6 @@ class EKF:
         text +='};\n\n'
 
         return text
+
+    def __variable(symbol_name):
+        return str(symbol_name).replace('_', '').replace('\\', '').replace('{', '').replace('}', '').lower()
